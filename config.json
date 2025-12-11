@@ -1,0 +1,11 @@
+{
+  "word_field": "单词",
+  "audio_field": "发音",
+  "ipa_field": "音标",
+  "trans_field": "基本释义",
+  "example_field": "例句",
+  "example_trans_field": "例句翻译",
+  "image_field": "图片",
+  "audio_local": true,
+  "image_local": true
+}
