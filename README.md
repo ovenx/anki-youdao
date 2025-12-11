@@ -1,6 +1,10 @@
 ### 基本信息
 自动抓取有道单词信息到anki卡片，包含（单词释义，发音，图片，例句，例句翻译等）
+
 兼容版本：anki 25.09.2
+
+### 使用方法
+下载本项目放到对应的插件目录即可，`your_path\addons21\`
 
 ### 点击获取单词信息
 ---
@@ -17,3 +21,4 @@
 ---
 <img width="300" alt="image" src="https://github.com/user-attachments/assets/e061c441-0098-42a1-89b3-55500bc2e6e0" />
 ---
+
