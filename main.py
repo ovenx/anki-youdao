@@ -5,6 +5,12 @@ from aqt.gui_hooks import add_cards_did_init, browser_menus_did_init
 from aqt.utils import showInfo
 import requests
 from bs4 import BeautifulSoup
+import os
+import logging
+from datetime import datetime
+import random
+from html import unescape
+import re
 
 # ---------- 插件配置 ----------
 config = mw.addonManager.getConfig(__name__) or {}
@@ -20,14 +26,112 @@ IMAGE_FIELD = config.get("image_field", "Image")  # 图片字段
 AUDIO_LOCAL = config.get("audio_local", True)  # True: 下载到本地，False: 使用在线URL
 IMAGE_LOCAL = config.get("image_local", True)  # True: 下载到本地，False: 使用在线URL
 
+
+ADDON_DIR = os.path.dirname(__file__)
+LOG_FILE = os.path.join(ADDON_DIR, "youdao_debug.log")
+
+DEBUG = config.get("debug", False)
+
+_logger = None
+
+def get_logger():
+    global _logger
+    if _logger:
+        return _logger
+
+    logger = logging.getLogger("youdao_addon")
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False  # ⭐ 关键：不走 Anki 的 root logger
+
+    if not logger.handlers:
+        handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+        formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(message)s"
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+
+    _logger = logger
+    return logger
+
+
+def log(msg):
+    if not DEBUG:
+        return
+    logger = get_logger()
+    logger.debug(msg)
+    # 立刻 flush，方便你实时看文件
+    for h in logger.handlers:
+        h.flush()
+
+
+USER_AGENTS = [
+    # Chrome Win
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+
+    # Edge
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/121.0.0.0 Safari/537.36",
+
+    # macOS Chrome
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+
+    # macOS Safari
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+]
+
+ACCEPT_LANGS = [
+    "en-US,en;q=0.9",
+    "en-GB,en;q=0.8",
+    "zh-CN,zh;q=0.9,en;q=0.8",
+]
+
+def random_headers():
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept-Language": random.choice(ACCEPT_LANGS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    return headers
+  
+  
+def clean_word(raw):
+    if not raw:
+        return ""
+
+    # 1. 去首尾空白
+    word = raw.strip()
+
+    # 2. 去 HTML 标签
+    if "<" in word and ">" in word:
+        word = BeautifulSoup(word, "html.parser").get_text()
+
+    # 3. HTML 实体解码
+    word = unescape(word)
+
+    # 4. 去掉首尾非单词字符（如标点）
+    word = re.sub(r"^[^\w]+|[^\w]+$", "", word)
+
+    # 5. 多空格压缩
+    word = re.sub(r"\s+", " ", word)
+
+    return word
 # ---------- 抓取新版有道网页信息 ----------
 def fetch_youdao_info(word):
     url = f"https://dict.youdao.com/result?word={word}&lang=en"
-    try:
-        r = requests.get(url, timeout=5)
-        if r.status_code != 200:
-            return None
+ 
 
+    log(f"[INFO] fetch_youdao_info start word={word}")
+    try:
+        r = requests.get(url, headers=random_headers(),timeout=5)
+        log(f"[INFO] status={r.status_code} url={url}")
+        if r.status_code != 200:
+            log(f"[ERROR] non-200 response")
+            return None
+        
+        log(f"[DEBUG] response snippet:\n{r.text[:500]}")
         soup = BeautifulSoup(r.text, "html.parser")
 
         # ---------- IPA ----------
@@ -84,20 +188,27 @@ def fetch_youdao_info(word):
 def fetch_youdao_image(word):
     """通过 picdict.youdao.com 接口获取图片"""
     api_url = f"https://picdict.youdao.com/search?q={word}&le=en"
+    log(f"[INFO] fetch_youdao_image word={word}")
     try:
-        r = requests.get(api_url, timeout=5)
+        r = requests.get(api_url, headers=random_headers(), timeout=5)
+        log(f"[INFO] image api status={r.status_code}")
         if r.status_code != 200:
+            log("[ERROR] image api non-200")
             return None
-
+        log(f"[DEBUG] image api raw text={r.text}")
+        
         # 尝试解析 JSON
         try:
             j = r.json()
-        except Exception:
+        except Exception as e:
+            log(f"[ERROR] json decode error: {e}")
             return None
+        log(f"[DEBUG] image api json={j}")
 
         # ======== 新增：处理 code=101 / 无数据情况 ========
         # 返回格式：{"msg": "picture dict no data", "code": 101}
         if j.get("code") != 0:
+            log(f"[WARN] image api code={j.get('code')} msg={j.get('msg')}")
             return None
 
         # 继续从 data.pic 中解析
@@ -128,10 +239,13 @@ def fetch_youdao_image(word):
 # ---------- 下载美音 TTS ----------
 def fetch_youdao_audio(word):
     url = f"https://dict.youdao.com/dictvoice?audio={word}&type=2"
+    log(f"[INFO] fetch_youdao_audio word={word}")
     if AUDIO_LOCAL:  # 下载到本地
         try:
-            r = requests.get(url, timeout=5)
+            r = requests.get(url, headers=random_headers(), timeout=5)
+            log(f"[INFO] audio status={r.status_code} size={len(r.content)}")
             if r.status_code == 200 and r.content:
+                log("[WARN] audio empty or non-200")
                 filename = f"{word}.mp3"
                 mw.col.media.write_data(filename, r.content)
                 return f"[sound:{filename}]"
@@ -151,7 +265,14 @@ def insert_field(note, field_name, value):
 # ---------- 更新单个 Note ----------
 def update_note_fields(note):
   try:
-      word = note[WORD_FIELD].strip()
+    raw_word = note[WORD_FIELD]
+    word = clean_word(raw_word)
+
+    log(f"[WORD] raw='{raw_word}' cleaned='{word}'")
+
+    if not word:
+        showInfo("单词字段为空或无效")
+        return
   except KeyError:
       showInfo(f"单词字段 '{WORD_FIELD}' 不存在")
       return
@@ -162,6 +283,7 @@ def update_note_fields(note):
 
   info = fetch_youdao_info(word)
   if not info:
+      log(f"[ERROR] fetch_youdao_info failed word={word}")
       showInfo("抓取失败，请检查网络或单词拼写")
       return
 

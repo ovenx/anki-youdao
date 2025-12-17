@@ -7,5 +7,6 @@
   "example_trans_field": "例句翻译",
   "image_field": "图片",
   "audio_local": true,
-  "image_local": true
+  "image_local": true,
+  "debug": false
 }
